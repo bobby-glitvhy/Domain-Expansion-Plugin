@@ -1,0 +1,15 @@
+name: DomainExpansion
+version: 2.1
+main: me.yourname.domain.DomainExpansionPlugin
+api-version: 1.21
+author: YourName
+
+commands:
+  givedomain:
+    description: Gives the Domain Expansion item
+    usage: /givedomain <player>
+    permission: domain.give
+
+permissions:
+  domain.give:
+    default: op
