@@ -16,22 +16,31 @@ import java.util.*;
 
 public class DomainExpansionPlugin extends JavaPlugin implements Listener, CommandExecutor {
 
-    private final int RADIUS = 8;
-    private final int DURATION = 200; // 10 seconds
-    private final int COOLDOWN = 60; // seconds
+    private static final int RADIUS = 8;
+    private static final int DURATION = 200; // 10 seconds (ticks)
+    private static final int COOLDOWN = 60;  // 60 seconds
 
     private boolean domainActive = false;
     private final Map<UUID, Long> cooldowns = new HashMap<>();
+    private final List<Block> placedBarriers = new ArrayList<>();
 
     @Override
     public void onEnable() {
         Bukkit.getPluginManager().registerEvents(this, this);
         getCommand("givedomain").setExecutor(this);
+        getLogger().info("DomainExpansion enabled.");
     }
 
-    // Command to give item
     @Override
-    public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
+    public void onDisable() {
+        cleanupDomain();
+    }
+
+    // ----------------------------
+    // COMMAND: /givedomain <player>
+    // ----------------------------
+    @Override
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
 
         if (args.length != 1) {
             sender.sendMessage("Usage: /givedomain <player>");
@@ -50,12 +59,16 @@ public class DomainExpansionPlugin extends JavaPlugin implements Listener, Comma
         item.setItemMeta(meta);
 
         target.getInventory().addItem(item);
-        sender.sendMessage("Given Domain Expansion to " + target.getName());
+        sender.sendMessage("Gave Domain Expansion to " + target.getName());
         return true;
     }
 
+    // ----------------------------
+    // RIGHT CLICK ACTIVATION
+    // ----------------------------
     @EventHandler
     public void onUse(PlayerInteractEvent event) {
+
         if (!event.getAction().toString().contains("RIGHT_CLICK")) return;
 
         Player player = event.getPlayer();
@@ -64,13 +77,14 @@ public class DomainExpansionPlugin extends JavaPlugin implements Listener, Comma
         if (item.getType() != Material.BLAZE_ROD) return;
         if (!item.hasItemMeta()) return;
         if (!ChatColor.stripColor(item.getItemMeta().getDisplayName())
-                .equals("Domain Expansion")) return;
+                .equalsIgnoreCase("Domain Expansion")) return;
 
         if (domainActive) {
             player.sendMessage(ChatColor.RED + "A domain is already active!");
             return;
         }
 
+        // Cooldown check
         if (cooldowns.containsKey(player.getUniqueId())) {
             long timeLeft = (cooldowns.get(player.getUniqueId()) - System.currentTimeMillis()) / 1000;
             if (timeLeft > 0) {
@@ -80,32 +94,42 @@ public class DomainExpansionPlugin extends JavaPlugin implements Listener, Comma
         }
 
         activateDomain(player);
-        cooldowns.put(player.getUniqueId(), System.currentTimeMillis() + (COOLDOWN * 1000));
+        cooldowns.put(player.getUniqueId(),
+                System.currentTimeMillis() + (COOLDOWN * 1000));
     }
 
+    // ----------------------------
+    // DOMAIN LOGIC
+    // ----------------------------
     private void activateDomain(Player caster) {
 
         domainActive = true;
         Location center = caster.getLocation();
         World world = center.getWorld();
-        List<Block> barrierBlocks = new ArrayList<>();
 
         caster.sendMessage(ChatColor.DARK_PURPLE + "Domain Expansion Activated!");
 
+        // Buff caster
         caster.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH, DURATION, 1));
         caster.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE, DURATION, 1));
 
-        // Create barrier sphere
+        // Create sphere wall
+        placedBarriers.clear();
+
         for (int x = -RADIUS; x <= RADIUS; x++) {
             for (int y = -RADIUS; y <= RADIUS; y++) {
                 for (int z = -RADIUS; z <= RADIUS; z++) {
 
-                    if (x*x + y*y + z*z >= RADIUS*RADIUS - 2 &&
-                        x*x + y*y + z*z <= RADIUS*RADIUS + 2) {
+                    double distance = x*x + y*y + z*z;
 
-                        Block block = world.getBlockAt(center.clone().add(x, y, z));
+                    if (distance <= RADIUS * RADIUS &&
+                            distance >= (RADIUS - 1) * (RADIUS - 1)) {
+
+                        Block block = world.getBlockAt(
+                                center.clone().add(x, y, z));
+
                         if (block.getType() == Material.AIR) {
-                            barrierBlocks.add(block);
+                            placedBarriers.add(block);
                             block.setType(Material.BARRIER);
                         }
                     }
@@ -113,35 +137,60 @@ public class DomainExpansionPlugin extends JavaPlugin implements Listener, Comma
             }
         }
 
+        // Domain tick task
         new BukkitRunnable() {
-            int ticks = 0;
+            int time = 0;
 
             @Override
             public void run() {
 
-                if (ticks >= DURATION) {
-                    for (Block b : barrierBlocks) {
-                        b.setType(Material.AIR);
-                    }
-                    domainActive = false;
+                if (time >= DURATION) {
+                    cleanupDomain();
                     cancel();
                     return;
                 }
 
                 for (Player p : world.getPlayers()) {
-                    if (!p.equals(caster) &&
-                        p.getLocation().distance(center) <= RADIUS) {
+                    if (!p.equals(caster)
+                            && p.getLocation().distance(center) <= RADIUS) {
 
                         p.damage(3.0, caster);
-                        p.addPotionEffect(new PotionEffect(
-                                PotionEffectType.SLOWNESS, 40, 2));
+                        p.addPotionEffect(
+                                new PotionEffect(
+                                        PotionEffectType.SLOWNESS,
+                                        40,
+                                        2
+                                )
+                        );
                     }
                 }
 
-                world.spawnParticle(Particle.DRAGON_BREATH, center, 100, 4, 2, 4);
+                // Safe particle for 1.21.11
+                world.spawnParticle(
+                        Particle.PORTAL,
+                        center,
+                        100,
+                        4, 2, 4,
+                        0.1
+                );
 
-                ticks += 20;
+                time += 20;
             }
         }.runTaskTimer(this, 0L, 20L);
+    }
+
+    // ----------------------------
+    // CLEANUP
+    // ----------------------------
+    private void cleanupDomain() {
+
+        for (Block b : placedBarriers) {
+            if (b.getType() == Material.BARRIER) {
+                b.setType(Material.AIR);
+            }
+        }
+
+        placedBarriers.clear();
+        domainActive = false;
     }
 }
